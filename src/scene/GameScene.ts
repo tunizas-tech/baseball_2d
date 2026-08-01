@@ -28,20 +28,33 @@ export class GameScene extends Phaser.Scene {
 
   private ballGraphics!: Phaser.GameObjects.Graphics;
   private bgGraphics!: Phaser.GameObjects.Graphics;
+  private fieldGraphics!: Phaser.GameObjects.Graphics;
   private instructionText!: Phaser.GameObjects.Text;
   private sweetSpotText!: Phaser.GameObjects.Text;
   private distanceMeterText!: Phaser.GameObjects.Text;
 
   private currentDistance: number = 0;
+  private ballStartX: number = 170;
+  private ballStartY: number = 420;
+
+  // Camera follow
+  private cameraFollowing: boolean = false;
+  private worldWidth: number = 8000; // Extended world for ball flight
 
   constructor() {
     super({ key: 'GameScene' });
   }
 
   create(): void {
-    // Draw background
+    // Set world bounds for camera scrolling
+    this.cameras.main.setBounds(0, 0, this.worldWidth, GAME_CONFIG.height);
+    this.physics?.world?.setBounds(0, 0, this.worldWidth, GAME_CONFIG.height);
+
+    // Draw extended background
     this.bgGraphics = this.add.graphics();
+    this.fieldGraphics = this.add.graphics();
     this.drawBackground();
+    this.drawExtendedField();
 
     // Initialize components
     this.fsm = new GameFSM();
@@ -58,7 +71,7 @@ export class GameScene extends Phaser.Scene {
     this.ballGraphics = this.add.graphics();
     this.ballFlightAnimator = null;
 
-    // Instruction text
+    // UI texts - fixed to camera (using setScrollFactor)
     this.instructionText = this.add.text(GAME_CONFIG.width / 2, 50, 'Press SPACE to start!', {
       fontSize: '24px',
       color: '#ffffff',
@@ -66,9 +79,8 @@ export class GameScene extends Phaser.Scene {
       align: 'center',
       stroke: '#000000',
       strokeThickness: 3
-    }).setOrigin(0.5);
+    }).setOrigin(0.5).setScrollFactor(0);
 
-    // Sweet spot text
     this.sweetSpotText = this.add.text(GAME_CONFIG.width / 2, 100, '', {
       fontSize: '20px',
       color: '#ffd700',
@@ -76,18 +88,18 @@ export class GameScene extends Phaser.Scene {
       align: 'center',
       stroke: '#000000',
       strokeThickness: 2
-    }).setOrigin(0.5);
+    }).setOrigin(0.5).setScrollFactor(0);
     this.sweetSpotText.setVisible(false);
 
-    // Distance meter during flight
-    this.distanceMeterText = this.add.text(GAME_CONFIG.width / 2, 130, '', {
-      fontSize: '18px',
-      color: '#ffffff',
+    // Distance meter - large and centered during flight
+    this.distanceMeterText = this.add.text(GAME_CONFIG.width / 2, 80, '', {
+      fontSize: '36px',
+      color: '#ffdd00',
       fontStyle: 'bold',
       align: 'center',
       stroke: '#000000',
-      strokeThickness: 2
-    }).setOrigin(0.5);
+      strokeThickness: 4
+    }).setOrigin(0.5).setScrollFactor(0);
     this.distanceMeterText.setVisible(false);
 
     // Create character
@@ -152,7 +164,6 @@ export class GameScene extends Phaser.Scene {
       this.fsm.transition(GameAction.PRESS_SPACEBAR, { power: result.power });
 
       if (result.triggersSweetSpot) {
-        // Enter sweet spot phase
         this.powerGauge.show(true);
         this.powerController.startSweetSpotPhase();
         this.instructionText.setText('SWEET SPOT! Press SPACE in the GOLD zone!');
@@ -205,23 +216,36 @@ export class GameScene extends Phaser.Scene {
     const distResult = DistanceCalculator.calculate({ angle, effectivePower });
     this.currentDistance = distResult.distance;
 
+    // pixels per meter for world display
+    const pixelsPerMeter = 8;
+
+    // Expand world bounds to fit the ball's flight distance + buffer
+    const neededWidth = this.ballStartX + this.currentDistance * pixelsPerMeter + GAME_CONFIG.width;
+    if (neededWidth > this.worldWidth) {
+      this.worldWidth = neededWidth;
+    }
+    this.cameras.main.setBounds(0, 0, this.worldWidth, GAME_CONFIG.height);
+
+    // Calculate display velocity so ball lands at correct pixel distance
+    // distance_pixels = currentDistance * pixelsPerMeter
+    // We need: startX + vx * totalTime = startX + distance_pixels
+    // So vx = distance_pixels / totalTime
+    // And v = vx / cos(angle) ... but let's just use the physics directly
     const v = effectivePower * PHYSICS_CONFIG.baseDistanceMultiplier;
 
-    // Scale flight for display (compress into screen width)
-    const displayScale = (GAME_CONFIG.width - 200) / Math.max(distResult.distance, 1);
-    const displayVelocity = v * displayScale * 0.15;
-
     const path: FlightPath = {
-      startX: 170,
-      startY: 420,
+      startX: this.ballStartX,
+      startY: this.ballStartY,
       angle,
-      initialVelocity: displayVelocity,
-      gravity: PHYSICS_CONFIG.gravity * displayScale * 0.15,
-      totalFlightTime: distResult.flightTime > 0 ? Math.min(distResult.flightTime, 4) : 1
+      initialVelocity: v * pixelsPerMeter,
+      gravity: PHYSICS_CONFIG.gravity * pixelsPerMeter,
+      totalFlightTime: distResult.flightTime > 0 ? distResult.flightTime : 1
     };
 
     this.ballFlightAnimator = new BallFlightAnimator(path);
     this.distanceMeterText.setVisible(true);
+    this.cameraFollowing = true;
+    this.instructionText.setVisible(false);
   }
 
   private handleBallFlight(delta: number): void {
@@ -233,30 +257,53 @@ export class GameScene extends Phaser.Scene {
 
     const pos = this.ballFlightAnimator.getPosition(elapsed);
 
-    // Draw ball
+    // Draw ball at world position
     this.ballGraphics.clear();
     this.ballGraphics.fillStyle(0xffffff, 1);
-    this.ballGraphics.fillCircle(pos.x, pos.y, 6);
-    this.ballGraphics.lineStyle(1, 0xff0000, 0.8);
-    this.ballGraphics.strokeCircle(pos.x, pos.y, 6);
+    this.ballGraphics.fillCircle(pos.x, pos.y, 8);
+    this.ballGraphics.lineStyle(2, 0xff0000, 0.8);
+    this.ballGraphics.strokeCircle(pos.x, pos.y, 8);
+
+    // Ball shadow on ground
+    this.ballGraphics.fillStyle(0x000000, 0.3);
+    this.ballGraphics.fillEllipse(pos.x, this.ballStartY + 5, 12, 4);
 
     // Trail
     this.particleEffects.addTrailParticle(pos.x, pos.y);
 
-    // Distance meter progress
+    // Camera follows the ball horizontally, keeping it in center-left of screen
+    if (this.cameraFollowing) {
+      const targetX = pos.x - GAME_CONFIG.width * 0.3;
+      const camX = Math.max(0, targetX);
+      this.cameras.main.scrollX = camX;
+    }
+
+    // Distance meter - show current progress
     const progress = elapsed / totalTime;
     const currentDist = this.currentDistance * progress;
-    this.distanceMeterText.setText(`${currentDist.toFixed(1)} m`);
+    this.distanceMeterText.setText(`🏏 ${currentDist.toFixed(1)} m`);
 
     if (!stillFlying) {
       // Ball landed
       this.particleEffects.createImpactBurst(pos.x, pos.y);
-      this.distanceMeterText.setVisible(false);
+      this.distanceMeterText.setText(`🏏 ${this.currentDistance.toFixed(1)} m`);
 
-      this.time.delayedCall(500, () => {
+      this.time.delayedCall(1200, () => {
         this.ballGraphics.clear();
         this.particleEffects.clearTrail();
-        this.fsm.transition(GameAction.BALL_LANDED, { distance: this.currentDistance });
+        this.cameraFollowing = false;
+
+        // Smoothly scroll camera back to start
+        this.tweens.add({
+          targets: this.cameras.main,
+          scrollX: 0,
+          duration: 800,
+          ease: 'Sine.easeInOut',
+          onComplete: () => {
+            this.distanceMeterText.setVisible(false);
+            this.fsm.transition(GameAction.BALL_LANDED, { distance: this.currentDistance });
+          }
+        });
       });
     }
   }
@@ -266,7 +313,6 @@ export class GameScene extends Phaser.Scene {
       this.resultUI.show(this.currentDistance);
     }
 
-    // Check for restart
     if (this.inputHandler.justPressed()) {
       this.restartGame();
     }
@@ -277,14 +323,16 @@ export class GameScene extends Phaser.Scene {
     this.ballGraphics.clear();
     this.distanceMeterText.setVisible(false);
     this.sweetSpotText.setVisible(false);
+    this.instructionText.setVisible(true);
 
     this.angleOscillator.reset();
     this.powerController.reset();
     this.ballFlightAnimator = null;
     this.currentDistance = 0;
+    this.cameraFollowing = false;
+    this.cameras.main.scrollX = 0;
 
     this.fsm.transition(GameAction.RESTART);
-    // After restart, FSM goes to ANGLE_SETTING
     this.angleOscillator.start();
     this.angleGauge.show();
     this.instructionText.setText('Set the ANGLE! Press SPACE');
@@ -293,50 +341,85 @@ export class GameScene extends Phaser.Scene {
   private drawBackground(): void {
     const g = this.bgGraphics;
 
-    // Sky gradient (already set as background color)
+    // Sky gradient across full world width
+    g.fillStyle(0x87CEEB, 1);
+    g.fillRect(0, 0, this.worldWidth, GAME_CONFIG.height);
 
-    // Ground
-    g.fillStyle(0x4a7c3f, 1);
-    g.fillRect(0, 440, GAME_CONFIG.width, GAME_CONFIG.height - 440);
-
-    // Dirt/diamond area
-    g.fillStyle(0xc4883e, 1);
-    g.fillTriangle(100, 440, 200, 440, 150, 410);
-
-    // Field lines
-    g.lineStyle(2, 0xffffff, 0.5);
-    g.beginPath();
-    g.moveTo(150, 440);
-    g.lineTo(GAME_CONFIG.width, 380);
-    g.strokePath();
-
-    g.beginPath();
-    g.moveTo(150, 440);
-    g.lineTo(GAME_CONFIG.width, 440);
-    g.strokePath();
-
-    // Distance markers
-    g.lineStyle(1, 0xffffff, 0.3);
-    for (let i = 1; i <= 5; i++) {
-      const x = 150 + i * 160;
-      g.beginPath();
-      g.moveTo(x, 380);
-      g.lineTo(x, 450);
-      g.strokePath();
-    }
-
-    // Clouds
-    g.fillStyle(0xffffff, 0.6);
-    g.fillEllipse(200, 80, 80, 30);
-    g.fillEllipse(230, 75, 60, 25);
-    g.fillEllipse(600, 100, 100, 35);
-    g.fillEllipse(640, 90, 70, 28);
-    g.fillEllipse(850, 60, 90, 30);
+    // Gradient sky effect
+    g.fillStyle(0x6BB3D9, 0.5);
+    g.fillRect(0, 0, this.worldWidth, 100);
 
     // Sun
     g.fillStyle(0xffdd00, 0.8);
-    g.fillCircle(950, 60, 35);
+    g.fillCircle(300, 60, 35);
     g.fillStyle(0xffee44, 0.4);
-    g.fillCircle(950, 60, 45);
+    g.fillCircle(300, 60, 45);
+
+    // Clouds scattered across the world
+    g.fillStyle(0xffffff, 0.6);
+    for (let i = 0; i < this.worldWidth; i += 400) {
+      const cx = i + Math.random() * 200;
+      const cy = 50 + Math.random() * 60;
+      g.fillEllipse(cx, cy, 80 + Math.random() * 40, 25 + Math.random() * 15);
+      g.fillEllipse(cx + 30, cy - 5, 60, 20);
+    }
+
+    // Ground across full world
+    g.fillStyle(0x4a7c3f, 1);
+    g.fillRect(0, 440, this.worldWidth, GAME_CONFIG.height - 440);
+  }
+
+  private drawExtendedField(): void {
+    const g = this.fieldGraphics;
+
+    // Dirt/diamond area at home plate
+    g.fillStyle(0xc4883e, 1);
+    g.fillTriangle(100, 440, 200, 440, 150, 410);
+
+    // Field lines extending across the world
+    g.lineStyle(2, 0xffffff, 0.5);
+    g.beginPath();
+    g.moveTo(150, 440);
+    g.lineTo(this.worldWidth, 380);
+    g.strokePath();
+
+    g.beginPath();
+    g.moveTo(150, 440);
+    g.lineTo(this.worldWidth, 440);
+    g.strokePath();
+
+    // Distance markers every 20 meters (1m = 8px)
+    const pixelsPerMeter = 8;
+    for (let meters = 20; meters <= 200; meters += 20) {
+      const px = this.ballStartX + meters * pixelsPerMeter;
+      // Marker line
+      g.lineStyle(1, 0xffffff, 0.4);
+      g.beginPath();
+      g.moveTo(px, 425);
+      g.lineTo(px, 445);
+      g.strokePath();
+
+      // Distance label on ground
+      const label = this.add.text(px, 450, `${meters}m`, {
+        fontSize: '12px',
+        color: '#ffffff',
+        stroke: '#000000',
+        strokeThickness: 1
+      }).setOrigin(0.5, 0);
+      label.setAlpha(0.6);
+    }
+
+    // Grass texture lines
+    g.lineStyle(1, 0x3d6b34, 0.3);
+    for (let i = 0; i < this.worldWidth; i += 80) {
+      g.beginPath();
+      g.moveTo(i, 445);
+      g.lineTo(i + 30, 445);
+      g.strokePath();
+      g.beginPath();
+      g.moveTo(i + 15, 460);
+      g.lineTo(i + 45, 460);
+      g.strokePath();
+    }
   }
 }

@@ -14,6 +14,6 @@ export const GAUGE_CONFIG: { angle: GaugeConfig; power: GaugeConfig; sweetSpot: 
 
 export const PHYSICS_CONFIG = {
   gravity: 9.8,
-  baseDistanceMultiplier: 5,
-  maxDistance: 500
+  baseDistanceMultiplier: 1.2,
+  maxDistance: 150
 };
